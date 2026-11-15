@@ -9,7 +9,7 @@ import { createInput } from './input.js';
 import { createPlayer } from './player.js';
 import { createArmoury } from './weapons.js';
 import { createBots } from './bots.js';
-import { createRounds, ROUND_TIME, BOMB_TICK } from './rounds.js';
+import { createRounds, ROUND_TIME, BOMB_TICK, BUY_TIME } from './rounds.js';
 import { createHud } from './hud.js';
 import { createFx } from './fx.js';
 import { createGrenades } from './grenades.js';
@@ -247,6 +247,7 @@ function step(dt) {
   hurtCooldown = Math.max(0, hurtCooldown - dt);
   world.step(elapsed);
   rounds.step(dt);
+  if (autoplay) autoplayTick(dt);
   if (store.phase === PHASE.BUY || store.phase === PHASE.OVER) {
     hud.setBuyOpen(store.phase === PHASE.BUY, store.round);
     return;
@@ -268,8 +269,12 @@ function step(dt) {
   if (st.firing && store.player.alive) playerShoot();
   if (!st.firing) armoury.releaseTrigger();
 
-  // movement (dead players spectate: no move)
-  if (store.player.alive) player.step(dt, st.keys);
+  // movement (dead players spectate: no move). Buy phase plants the feet:
+  // the arena's own spawn crates pin the body until the round goes live.
+  if (store.player.alive) {
+    if (store.phase !== PHASE.LIVE) st.keys.clear();
+    player.step(dt, st.keys);
+  }
   playerSpeed = player.speed2d();
 
   // plant channel (player carries the charge when a site is free)
@@ -407,7 +412,6 @@ function frame(now) {
     let n = 0;
     while (accumulator >= FIXED && n < 5) { step(FIXED); accumulator -= FIXED; n++; }
     if (accumulator > FIXED * 5) accumulator = 0;
-    if (autoplay) autoplayTick(dt);
     syncCamera();
     fx.step(dt);
     hud.frame(bots, armoury.spreadOf(playerSpeed));
@@ -529,10 +533,14 @@ function runShot(name) {
 // --- autoplay bot for live capture: walks, aims, fires at nearest foe ----
 let autoT = 0;
 const autoKeys = new Set();
+// autoplay: the stand-in fifth sentinel. Holds B with IRON, strafes the lane
+// mouth, fires at the nearest raider — the lobby never plays 4v5 on camera.
 function autoplayTick(dt) {
   autoT += dt;
   input.state.sim = true;
-  if (store.phase === PHASE.BUY && autoT > 1) { rounds.startLive(); }
+  // autoplay only opens the first live phase and rejoins after buy time;
+  // the round director owns every LIVE transition past that
+  if (store.phase === PHASE.BUY && autoT > 1 && store.timer < BUY_TIME - 1) { rounds.startLive(); return; }
   if (store.phase !== PHASE.LIVE || !store.player.alive) return;
   let best = null, bestD = 1e9;
   for (const b of bots.foes) {
@@ -542,12 +550,26 @@ function autoplayTick(dt) {
   }
   input.state.keys.clear();
   input.state.firing = false;
-  if (best) {
+  // anchor near the B mouth beside the lane, facing down-lane at the push.
+  // sim mode eats key events, so steer the body directly: yaw toward the
+  // waypoint, walk it, then hold and fight.
+  const ax = 7.2, az = 4.6;
+  const dx = ax - store.player.pos[0], dz = az - store.player.pos[2];
+  const ad = Math.hypot(dx, dz);
+  if (ad > 1.2) {
+    // walk first, look later: stride to the anchor, then fight — never crawl
+    const want = Math.atan2(-dx, -dz);
+    store.player.yaw = want;
+    store.player.pos[0] += -Math.sin(want) * 4.4 * dt;
+    store.player.pos[2] += -Math.cos(want) * 4.4 * dt;
+  } else if (best) {
     aimAt(best.pos.x, 1.25, best.pos.z);
-    if (bestD > 7) input.state.keys.add('KeyW');
+    // strafe the mouth: a moving anchor is a missed shot, not a dead one
+    const strafe = Math.floor(autoT * 1.4) % 2 === 0 ? 1 : -1;
+    store.player.pos[0] += Math.cos(store.player.yaw) * strafe * 3.4 * dt;
+    store.player.pos[2] += -Math.sin(store.player.yaw) * strafe * 3.4 * dt;
     if (autoT % 0.5 < 0.3) input.state.firing = true;
   }
-  if (Math.floor(autoT * 2) % 20 === 0) input.state.keys.add('KeyA');
 }
 
 // debug bridge for automated playtests: positions, modes, hp, phase
@@ -555,7 +577,7 @@ function autoplayTick(dt) {
 window.__stepN = (n) => {
   n = Math.min(n | 0 || 600, 6000);
   input.state.sim = true;
-  for (let i = 0; i < n; i++) { step(FIXED); if (autoplay) autoplayTick(FIXED); }
+  for (let i = 0; i < n; i++) { step(FIXED); }
   syncCamera();
   return window.__dbg();
 };

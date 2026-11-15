@@ -16,7 +16,7 @@ export function createStore() {
     plant: { active: false, t: 0, need: 3 },
     player: {
       hp: 100, armor: 0, alive: true, crouching: false,
-      pos: [0, 0, 10], vel: [0, 0, 0], yaw: 0, pitch: 0, eye: 1.6,
+      pos: [2.2, 0, 9.5], vel: [0, 0, 0], yaw: 0.35, pitch: 0, eye: 1.6,
       onGround: true, flash: 0,
     },
     kills: 0, deaths: 0, plantedByFoe: false,

@@ -7,6 +7,7 @@
 //   PUSH    - attackers walk their lane toward the called site
 //   EXECUTE - attackers converge on the site ring together, entry first
 //   HOLD    - defenders anchor a post; attackers guard a planted charge
+//   (holding anchors skirmish from the post instead of chasing far contacts)
 //   ROTATE  - a defender answers a teammate's contact call at the far site
 //   RETAKE  - defenders sweep the planted site as a group
 //   FIGHT   - overrides everything while an enemy is in the vision cone
@@ -30,9 +31,12 @@ const SIGHT = 34;
 const HEAR = 17;
 const FOV = 0.62; // half-angle radians of the vision cone
 const REACT = 0.42;
+const COMMIT_RANGE = 12; // firefights commit up close; beyond this both sides
+// share the contact and skirmish on the move, so executes keep flowing
 const BURST = 3;
 const SHOT_GAP = 0.34;
 const BURST_GAP = 1.15;
+const MOVE_PENALTY = 0.16; // firing on the move is ragged: discipline is the tell
 const RESPITE = 2.5; // seconds before a lost contact drops back to plan
 const TRADE_RANGE = 20;
 const TRADE_BONUS = 0.09;
@@ -55,19 +59,22 @@ const ALLIES = [
 // execute ring: five slots around each vault, entry takes slot 0
 const RING = {
   A: [[-10.4, 0], [-12.2, 2.9], [-12.2, -2.9], [-9.2, 1.6], [-9.2, -1.6]],
-  B: [[10.4, 0], [12.2, 2.9], [12.2, -2.9], [9.2, 1.6], [9.2, -1.6]],
+  B: [[10.4, -2.2], [11.4, 2.9], [11.4, -2.9], [9.2, 1.6], [9.2, -1.6]],
 };
 const POST = {
-  // defender anchors: [post x, post z, face x, face z]
-  HALO: [-11.5, 5.2, -11.5, -8],
-  IRON: [11.5, 5.2, 11.5, -8],
+  // defender anchors: [post x, post z, face x, face z] — every post verified
+  // clear of colliders (a 0.34 probe must fit): IRON/JUNO used to spawn
+  // inside a pipe and the mid wall and never moved a metre
+  HALO: [-11.3, 5.4, -11.5, -8],
+  IRON: [9.2, 1.6, 11.5, -4],
   VEX: [0, 2.2, 0, -10],
-  JUNO: [0, 7.6, 0, -10],
+  JUNO: [2.2, 7.4, 0, -10],
   supportA: [-8, 4.2, -11.5, -4],
-  supportB: [8, 4.2, 11.5, -4],
+  supportB: [8.2, 1.4, 11.5, -4],
 };
-const ROVER_PATROL = [[-3.2, 4.2], [3.2, 4.2], [0, 0.8]];
-const ROLE_AIM = { ENTRY: 0.42, SUPPORT: 0.38, LURK: 0.36, ANCHOR: 0.34, ROVER: 0.33, FLEX: 0.33 };
+// CT-side patrol: off the walls, out of the mid crossfire
+const ROVER_PATROL = [[-2.8, 7.2], [2.8, 7.2], [-2.8, 4.0]];
+const ROLE_AIM = { ENTRY: 0.48, SUPPORT: 0.44, LURK: 0.42, ANCHOR: 0.30, ROVER: 0.29, FLEX: 0.29 };
 
 function angleDiff(a, b) {
   let d = a - b;
@@ -122,7 +129,7 @@ export function createBots(scene, colliders, store) {
       route: ROUTES.mid, wp: 0, mode: 'IDLE', site: SITES.A,
       react: 0, burstLeft: 0, shotT: 0, burstT: 0, aimErr: 0.3,
       heardAt: null, contactAt: 0, veng: 0, vengX: 0, vengZ: 0,
-      plantT: 0, ringSlot: 0, patrolIdx: 0, patrolT: 0, rotateT: 0,
+      plantT: 0, ringSlot: 0, patrolIdx: 0, patrolT: 0, rotateT: 0, hadContact: false,
       lastSeenX: 0, lastSeenZ: 0, loseT: 0, stride: 0,
     };
     torso.userData.bot = b;
@@ -158,7 +165,7 @@ export function createBots(scene, colliders, store) {
       b.react = 0; b.burstLeft = 0; b.shotT = 0; b.burstT = 0;
       b.heardAt = null; b.veng = 0; b.plantT = 0;
       b.ringSlot = i;
-      b.loseT = 0; b.contactX = 0; b.contactZ = 0;
+      b.loseT = 0; b.contactX = 0; b.contactZ = 0; b.hadContact = false;
       b.fightKind = null; b.fightRef = null;
       b.lastSeenX = 0; b.lastSeenZ = 0;
       b.root.visible = true;
@@ -169,7 +176,7 @@ export function createBots(scene, colliders, store) {
       b.ringSlot = ai;
       b.mode = 'HOLD'; b.patrolIdx = 0; b.patrolT = 0; b.rotateT = 0;
       b.react = 0; b.burstLeft = 0; b.shotT = 0; b.burstT = 0;
-      b.heardAt = null; b.veng = 0; b.loseT = 0;
+      b.heardAt = null; b.veng = 0; b.loseT = 0; b.hadContact = false;
       b.fightKind = null; b.fightRef = null;
       const pk = POST[b.name];
       b.pos.set(pk[0], 0, pk[1]);
@@ -188,7 +195,10 @@ export function createBots(scene, colliders, store) {
     const dist = Math.hypot(dx, dz);
     if (dist > SIGHT) return 0;
     const want = Math.atan2(-dx, -dz);
-    const yawRef = b.mode === 'HOLD' || b.mode === 'FIGHT' ? b.yaw : want;
+    // attackers walk face-first down their lane: they engage whatever stands
+    // ahead of the advance, even without a FIGHT lock
+    const onRoute = b.team === 'foe' && (b.mode === 'PUSH' || b.mode === 'EXECUTE');
+    const yawRef = (b.mode === 'HOLD' || b.mode === 'FIGHT' || onRoute) ? b.yaw : want;
     if (Math.abs(angleDiff(want, yawRef)) > FOV + 0.55 && dist > 4) return 0;
     if (Math.abs(ty - 1.4) > 2.6 + dist * 0.12) return 0;
     if (dist > 3 && !losClear(b.pos.x, b.pos.z, tx, tz)) return 0;
@@ -243,7 +253,7 @@ export function createBots(scene, colliders, store) {
     }
     const dx = gx - b.pos.x, dz = gz - b.pos.z;
     const d = Math.hypot(dx, dz);
-    if (d < 0.35) return gx === tx && gz === tz;
+    if (d < 0.9) return gx === tx && gz === tz;
     b.yaw = Math.atan2(-dx, -dz);
     const stepLen = Math.min(d, sp * dt);
     const nx = b.pos.x + (dx / d) * stepLen;
@@ -340,8 +350,14 @@ export function createBots(scene, colliders, store) {
             if (d > 0 && d < best) { best = d; dist = d; kind = e[3]; ref = e[4]; }
           }
           if (dist > 0) {
-            if (b.mode !== 'FIGHT') { b.react = b.veng > 0 ? 0 : REACT; }
-            b.mode = 'FIGHT';
+            // PUSH and ROTATE never freeze at range: both share the contact,
+            // keep walking the plan, and skirmish on the move at a ragged
+            // penalty. Only contact inside COMMIT_RANGE pins a bot into FIGHT;
+            // attackers never stop for a far contact at all — the entries lead
+            // and the line walks the lane behind them.
+            const advancing = (b.mode === 'PUSH' || b.mode === 'ROTATE')
+              && (b.team === 'foe' || dist > COMMIT_RANGE);
+            if (!b.hadContact) { b.react = b.veng > 0 ? 0 : REACT; b.hadContact = true; }
             b.fightKind = kind; b.fightRef = ref;
             b.lastSeenX = kind === 'player' ? playerPos.x : ref.pos.x;
             b.lastSeenZ = kind === 'player' ? playerPos.z : ref.pos.z;
@@ -349,19 +365,27 @@ export function createBots(scene, colliders, store) {
             // share the contact: the whole team rotates on one call
             const side = b.team === 'foe' ? comms.foe : comms.you;
             side.contact = { x: b.lastSeenX, z: b.lastSeenZ, time: time };
-          } else if (b.mode === 'FIGHT') {
-            b.loseT += dt;
-            if (b.loseT > RESPITE) {
-              b.loseT = 0;
-              b.mode = b.team === 'foe'
-                ? (bombPlanted || planted ? 'HOLD' : 'EXECUTE')
-                : (planted ? 'RETAKE' : 'HOLD');
+            if (!advancing) {
+              if (b.team === 'you' && b.mode !== 'ROTATE' && dist > COMMIT_RANGE) {
+                b.mode = 'HOLD'; // anchor discipline: fight from the post, not the open
+              } else b.mode = 'FIGHT';
             }
-          } else if (b.heardAt && (b.mode === 'PUSH' || b.mode === 'HOLD')) {
-            b.mode = b.team === 'foe' ? 'EXECUTE' : 'ROTATE';
-            b.rotateT = 8;
-            b.contactX = b.heardAt.x; b.contactZ = b.heardAt.z;
-            if (b.team === 'you') b.heardAt = null;
+          } else {
+            b.hadContact = false;
+            if (b.mode === 'FIGHT') {
+              b.loseT += dt;
+              if (b.loseT > RESPITE) {
+                b.loseT = 0;
+                b.mode = b.team === 'foe'
+                  ? (bombPlanted || planted ? 'HOLD' : 'EXECUTE')
+                  : (planted ? 'RETAKE' : 'HOLD');
+              }
+            } else if (b.heardAt && (b.mode === 'PUSH' || b.mode === 'HOLD')) {
+              b.mode = b.team === 'foe' ? 'EXECUTE' : 'ROTATE';
+              b.rotateT = 8;
+              b.contactX = b.heardAt.x; b.contactZ = b.heardAt.z;
+              if (b.team === 'you') b.heardAt = null;
+            }
           }
         }
         if (b.react > 0) b.react -= dt;
@@ -376,12 +400,15 @@ export function createBots(scene, colliders, store) {
           this.updateAlly(b, dt, planted, time);
         }
         // --- firing solution: bursts, distance falloff, motion penalty ---
+        // no wall-eyes: the lane must be genuinely clear at trigger pull
         b.shotT -= dt; b.burstT -= dt;
-        if (b.mode === 'FIGHT' && b.react <= 0 && dist > 0 && dist < SIGHT) {
+        if ((b.mode === 'FIGHT' || (b.hadContact && (b.mode === 'PUSH' || b.mode === 'ROTATE' || b.mode === 'EXECUTE'))) && b.react <= 0 && dist > 0 && dist < SIGHT
+          && losClear(b.pos.x, b.pos.z, b.lastSeenX, b.lastSeenZ)) {
           if (b.burstLeft <= 0 && b.burstT <= 0) {
             b.burstLeft = BURST;
             b.burstT = BURST_GAP * (0.8 + Math.random() * 0.5);
-            const movePenalty = 0; // bots fire standing: discipline is the tell
+            // fire on the move is ragged, standing is clean: the discipline tell
+            const movePenalty = b.mode === 'FIGHT' ? 0 : MOVE_PENALTY;
             const crouchBonus = (b.fightKind === 'player' && playerCrouch) ? 0.06 : 0;
             const vengBonus = b.veng > 0 ? TRADE_BONUS : 0;
             b.aimErr = ROLE_AIM[b.role] * Math.max(0.12, 1 - dist / SIGHT)
@@ -423,16 +450,19 @@ export function createBots(scene, colliders, store) {
         const laneEnd = b.route[b.route.length - 1];
         const laneX = laneEnd ? laneEnd[0] : slot[0];
         const laneZ = laneEnd ? laneEnd[1] : slot[1];
-        const nearLane = Math.hypot(b.pos.x - laneX, b.pos.z - laneZ) < 3.5;
+        const nearLane = Math.hypot(b.pos.x - laneX, b.pos.z - laneZ) < 5.0;
         const nearSlot = Math.hypot(b.pos.x - slot[0], b.pos.z - slot[1]);
-        if (b.role === 'ENTRY' || nearLane || nearSlot < 14 || b.wp >= b.route.length) {
-          // at the lane mouth (or close to the ring): collapse onto the slot
+        if (b.role !== 'SUPPORT' && (b.role === 'ENTRY' || nearLane || nearSlot < 14 || b.wp >= b.route.length)) {
+          // entries (and anyone at the mouth or near the ring) collapse
+          // straight onto the slot — never loop back toward spawn waypoints
           if (moveToward(b, slot[0], slot[1], dt, EXEC_SPEED, CORNERS)) b.wp = b.route.length;
         } else {
-          // cut back to the lane mouth first: never dive through the mid wall
+          // supports short of the mouth: finish the lane FORWARD along the
+          // route, never backwards — then fight around the ring contact
           const wpi = Math.min(b.wp, b.route.length - 1);
           const wp = b.route[wpi];
           if (moveToward(b, wp[0], wp[1], dt, EXEC_SPEED, CORNERS)) b.wp++;
+          else if (b.wp < b.route.length - 1) b.wp++; // nudge past a stuck node
         }
         // the carrier sticks the plant when the site is unwatched
         if ((b.role === 'SUPPORT') && this.isCarrier(b)) {

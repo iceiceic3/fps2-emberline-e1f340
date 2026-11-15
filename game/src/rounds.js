@@ -23,9 +23,9 @@ export function createRounds(store, bots, armoury, fx) {
     s.plantedByFoe = false;
     s.player.hp = 100;
     s.player.alive = true;
-    s.player.pos = [0, 0, 10];
+    s.player.pos = [2.2, 0, 9.5];
     s.player.vel = [0, 0, 0];
-    s.player.yaw = 0; s.player.pitch = 0;
+    s.player.yaw = 0.35; s.player.pitch = 0; // face mid from the east-side spawn
     s.player.armor = first ? 0 : s.player.armor;
     if (first) s.money = START_MONEY;
     armoury.refillRound();
@@ -33,6 +33,8 @@ export function createRounds(store, bots, armoury, fx) {
     fx.onBuy(s);
   }
   function startLive() {
+    if (s.phase === PHASE.LIVE) return;
+    scored = false;
     s.phase = PHASE.LIVE;
     s.buyOpen = false;
     s.timer = ROUND_TIME;
@@ -59,21 +61,23 @@ export function createRounds(store, bots, armoury, fx) {
     s.killsThisRound = 0;
     fx.onRoundEnd(s, winner, reason);
   }
+  let scored = false; // one counted round per startLive, however many kills land
   function checkWin() {
-    if (s.phase !== PHASE.LIVE) return;
+    if (s.phase !== PHASE.LIVE || scored) return;
     const foes = bots.aliveCount();
     if (foes === 0 && s.bomb.state !== 'ticking') {
-      s.player.alive = true; // sentinel line held the vault: you stand back up
       endRound(0, 'All raiders eliminated.');
       return;
     }
     if (!s.player.alive) {
       if (s.bomb.state === 'ticking') return; // dead but ticking: allies can defuse
       if (bots.allyCount() > 0) return; // sentinels still hold: stay down
+      scored = true;
       endRound(1, 'You were eliminated.');
       return;
     }
     if (foes === 0) {
+      scored = true;
       if (s.bomb.state === 'ticking') { bots.comms.plant = null; endRound(0, 'Charge defused — site clear.'); s.bomb.state = 'idle'; }
       else endRound(0, 'All raiders eliminated.');
     }
