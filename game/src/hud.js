@@ -103,7 +103,7 @@ export function createHud(store, armoury) {
       c.beginPath(); c.arc(sx(bombPos[0]), sz(bombPos[2]), 4, 0, 7); c.fill();
     }
   }
-  let lastHp = -1, lastMag = -1, lastRes = -1, lastSlot = '';
+  let lastHp = -1, lastArmor = -1, lastMag = -1, lastRes = -1, lastSlot = '';
   return {
     feed, showBanner, hideBanner,
     setBuyOpen(open, round) {
@@ -137,8 +137,8 @@ export function createHud(store, armoury) {
     },
     frame(bots, spreadPx) {
       const p = store.player;
-      if (p.hp !== lastHp) {
-        lastHp = p.hp;
+      if (p.hp !== lastHp || p.armor !== lastArmor) {
+        lastHp = p.hp; lastArmor = p.armor;
         el.hpNum.textContent = String(Math.max(0, Math.ceil(p.hp)));
         el.hpFill.style.width = Math.max(0, Math.min(100, p.hp)) + '%';
         el.armor.textContent = '⛨ ' + Math.round(p.armor);
