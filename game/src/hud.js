@@ -1,6 +1,7 @@
 // DOM HUD mirror: reads the store every frame, never simulates. Minimap,
 // killfeed, banners, buy menu rows, plant/defuse channels live here.
 import { BUY_LIST, WEAPONS, ARMOR_PRICE, NADE_PRICE } from './weapons.js';
+import { BOMB_TICK } from './rounds.js';
 
 const FEED_MAX = 5;
 export function createHud(store, armoury) {
@@ -162,7 +163,6 @@ export function createHud(store, armoury) {
       // channels
       if (store.bomb.state === 'ticking') {
         el.bombbar.style.display = 'block';
-        const { BOMB_TICK } = { BOMB_TICK: 35 };
         el.bombFill.style.width = Math.min(100, store.bomb.tickT / BOMB_TICK * 100) + '%';
       } else el.bombbar.style.display = 'none';
       if (store.defuse.active) {

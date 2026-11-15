@@ -333,8 +333,6 @@ window.__gameStart = () => {
   input.requestLock();
 };
 window.__gameRestart = () => {
-  document.getElementById('matchend').hidden = true;
-  Object.assign(store, createStore.__fresh ? createStore.__fresh() : {});
   location.reload();
 };
 window.__gameCloseBuy = () => { rounds.startLive(); };
