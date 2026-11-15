@@ -314,15 +314,17 @@ function syncCamera() {
   camera.rotation.y += sh.x;
 }
 
+let hadLock = false;
 function onLockChange(locked) {
   if (shot) return;
   if (locked) {
     started = true;
+    hadLock = true;
     audio.unlock();
     document.getElementById('start').hidden = true;
     document.getElementById('matchend').hidden = true;
   } else if (store.phase !== PHASE.OVER) {
-    if (started) document.getElementById('start').hidden = false;
+    if (started && hadLock) document.getElementById('start').hidden = false;
   }
 }
 
@@ -474,6 +476,7 @@ function runShot(name) {
     }
     settle(25);
     aimAt(store.bomb.pos[0], 0.8, store.bomb.pos[2]);
+    hud.showBanner(false, 'CHARGE TICKING', 'Defuse the charge on site B [E]', 600);
     hud.frame(bots, 0.003);
   }
   hud.frame(bots, 0.004);
