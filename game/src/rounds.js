@@ -62,16 +62,19 @@ export function createRounds(store, bots, armoury, fx) {
   function checkWin() {
     if (s.phase !== PHASE.LIVE) return;
     const foes = bots.aliveCount();
+    if (foes === 0 && s.bomb.state !== 'ticking') {
+      s.player.alive = true; // sentinel line held the vault: you stand back up
+      endRound(0, 'All raiders eliminated.');
+      return;
+    }
     if (!s.player.alive) {
-      if (s.bomb.state === 'ticking') {
-        // dead but bomb ticking: round continues until defuse impossible or boom
-        return;
-      }
+      if (s.bomb.state === 'ticking') return; // dead but ticking: allies can defuse
+      if (bots.allyCount() > 0) return; // sentinels still hold: stay down
       endRound(1, 'You were eliminated.');
       return;
     }
     if (foes === 0) {
-      if (s.bomb.state === 'ticking') { endRound(0, 'Charge defused — site clear.'); s.bomb.state = 'idle'; }
+      if (s.bomb.state === 'ticking') { bots.comms.plant = null; endRound(0, 'Charge defused — site clear.'); s.bomb.state = 'idle'; }
       else endRound(0, 'All raiders eliminated.');
     }
   }
@@ -83,15 +86,15 @@ export function createRounds(store, bots, armoury, fx) {
       s.timer -= dt;
       // foe hard-plant fallback: if a foe reaches a site uncontested late, it plants
       if (s.bomb.state === 'idle') {
-        for (const b of bots.items) {
-          if (!b.alive || b.mode !== 'hold') continue;
+        for (const b of bots.foes) {
+          if (!b.alive || (b.mode !== 'HOLD' && b.mode !== 'EXECUTE')) continue;
           b.plantT = (b.plantT || 0) + dt * (s.player.alive ? 0.12 : 1);
           if (b.plantT > 14) {
             s.bomb.state = 'ticking';
             s.bomb.site = b.site;
             s.bomb.pos = [b.pos.x, 0.35, b.pos.z];
             s.plantedByFoe = true;
-            s.money += 0;
+            bots.comms.plant = { site: s.bomb.site, x: s.bomb.pos[0], z: s.bomb.pos[2] };
             fx.onPlant(s, false);
             break;
           }
@@ -99,7 +102,7 @@ export function createRounds(store, bots, armoury, fx) {
       }
       if (s.bomb.state === 'ticking') {
         s.bomb.tickT += dt;
-        if (s.bomb.tickT >= BOMB_TICK) {
+        if (s.bomb.tickT >= BOMB_TICK) { bots.comms.plant = null;
           fx.onBoom(s);
           endRound(1, 'The charge detonated.');
           return;

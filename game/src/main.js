@@ -121,21 +121,52 @@ function damagePlayer(amount, fromX, fromZ) {
   }
 }
 
-function foeHitscan(b, dist, aimErr) {
-  const p = store.player;
-  audio.foeShot(dist);
+// team shot resolution: foe shots can hit the player or a sentinel,
+// sentinel shots can only hit raiders (they never miss their own side).
+function resolveShot(e) {
+  const b = e.bot;
+  audio.foeShot(e.dist);
   tmpV.set(b.pos.x, 1.45, b.pos.z);
-  tmpV2.set(p.pos[0], p.pos[1] + p.eye * 0.82, p.pos[2]);
-  fx.tracer(tmpV, tmpV2, true);
-  // walk the ray: miss chance grows with error; crouch/cover help
   const roll = rnd();
-  if (roll > aimErr) return; // clean miss past the shoulder
-  // body part: 22% head
+  if (e.kind === 'player') {
+    const p = store.player;
+    tmpV2.set(p.pos[0], p.pos[1] + p.eye * 0.82, p.pos[2]);
+    fx.tracer(tmpV, tmpV2, b.team === 'foe');
+    if (!store.player.alive) return;
+    if (roll > e.aimErr) return; // clean miss past the shoulder
+    const head = rnd() < 0.22;
+    let dmg = head ? 34 : 13;
+    dmg *= Math.max(0.45, 1 - e.dist / 60);
+    damagePlayer(dmg, b.pos.x, b.pos.z);
+    hud.feed('<b>' + b.name + '</b> hit you' + (head ? ' (head)' : ''), true);
+    return;
+  }
+  // bot-vs-bot: tracer to the victim's chest, then the same accuracy walk
+  const v = e.ref;
+  if (!v || !v.alive) { // target already down: tracer at last-seen ground
+    tmpV2.set(e.tx, 1.1, e.tz);
+    fx.tracer(tmpV, tmpV2, b.team === 'foe');
+    return;
+  }
+  tmpV2.set(v.pos.x, 1.2, v.pos.z);
+  fx.tracer(tmpV, tmpV2, b.team === 'foe');
+  if (roll > e.aimErr) { fx.puff(new THREE.Vector3(v.pos.x, 1.2, v.pos.z), false); return; }
   const head = rnd() < 0.22;
-  let dmg = head ? 34 : 13;
-  dmg *= Math.max(0.45, 1 - dist / 60);
-  damagePlayer(dmg, b.pos.x, b.pos.z);
-  hud.feed('<b>' + b.name + '</b> hit you' + (head ? ' (head)' : ''), true);
+  const dmg = (head ? 30 : 12) * Math.max(0.45, 1 - e.dist / 60);
+  const mesh = head ? v.head : v.torso;
+  const killed = bots.damage(mesh, dmg, b.pos.x, b.pos.z);
+  fx.puff(new THREE.Vector3(v.pos.x, 1.3, v.pos.z), true);
+  if (killed) {
+    audio.kill();
+    if (v.team === 'foe') {
+      hud.feed('<b>' + b.name + '</b> dropped <b>' + v.name + '</b>', false);
+    } else {
+      hud.feed('<b>' + b.name + '</b> dropped <b>' + v.name + '</b>', true);
+    }
+    rounds.checkWin();
+  }
+  // gunfire is a contact call for the victim's team
+  bots.noise(b.pos.x, b.pos.z, b.team);
 }
 
 function playerShoot() {
@@ -165,7 +196,7 @@ function playerShoot() {
     if (hit.object.userData.bot) {
       const part = hit.object.userData.part;
       const dmg = spec.dmg * (part === 'head' ? spec.headMul : 1);
-      const killed = bots.damage(hit.object, dmg);
+      const killed = bots.damage(hit.object, dmg, store.player.pos[0], store.player.pos[2]);
       if (killed) {
         audio.kill();
         hud.hit(true);
@@ -263,6 +294,7 @@ function step(dt) {
       store.defuse.active = false;
       store.bomb.state = 'idle';
       store.bomb.tickT = 0;
+      bots.comms.plant = null;
       rounds.endRound(0, 'Charge defused with ' + Math.max(0, Math.ceil(store.timer)) + 's left.');
     }
   } else store.defuse.active = false;
@@ -271,7 +303,15 @@ function step(dt) {
   botCenter.set(store.player.pos[0], store.player.pos[1] + store.player.eye, store.player.pos[2]);
   bots.update(dt, elapsed, botCenter, store.player.alive && !shot, store.player.crouching, playerSpeed, store.bomb.state === 'ticking');
   for (const e of bots.events.splice(0)) {
-    if (e.type === 'shot' && store.player.alive) foeHitscan(e.bot, e.dist, e.aimErr);
+    if (e.type === 'shot') resolveShot(e);
+    else if (e.type === 'plant' && store.bomb.state === 'idle') {
+      store.bomb.state = 'ticking';
+      store.bomb.site = e.site;
+      store.bomb.pos = [e.x, 0.35, e.z];
+      store.plantedByFoe = true;
+      bots.comms.plant = { site: e.site, x: e.x, z: e.z };
+      fxBridge.onPlant(store, false);
+    }
   }
   // grenades
   tmpV.set(store.player.pos[0], store.player.pos[1] + store.player.eye, store.player.pos[2]);
@@ -281,7 +321,7 @@ function step(dt) {
     fx.shakeIt(0.05);
     for (const h of hits) {
       if (h.kind === 'bot') {
-        const killed = bots.damage({ userData: { bot: h.bot } }, h.amount);
+        const killed = bots.damage({ userData: { bot: h.bot } }, h.amount, at.x, at.z);
         fx.puff(new THREE.Vector3(h.bot.pos.x, 1.2, h.bot.pos.z), true);
         if (killed) {
           audio.kill(); hud.hit(true); rounds.awardKill();
@@ -397,9 +437,9 @@ function runWar() {
   rounds.startLive();
   store.player.pos = [-3, 0, 6];
   store.player.yaw = 0.35; store.player.pitch = 0.02;
-  for (const b of bots.items) {
+  for (const b of bots.foes.slice(0, 4)) {
     b.pos.set(-3 + (b.id - 1.5) * 2.2, 0, -6 - b.id * 1.5);
-    b.mode = 'fight'; b.react = 0;
+    b.mode = 'FIGHT'; b.react = 0;
     b.root.visible = true;
   }
   settle(30);
@@ -416,7 +456,7 @@ function runWar() {
     settle(7);
   }
   // their reply tracers
-  for (const b of bots.items.slice(0, 3)) {
+  for (const b of bots.foes.slice(0, 3)) {
     tmpV.set(b.pos.x, 1.45, b.pos.z);
     tmpV2.set(store.player.pos[0], store.player.pos[1] + 1.4, store.player.pos[2] + 0.4);
     fx.tracer(tmpV, tmpV2, true);
@@ -470,9 +510,9 @@ function runShot(name) {
     store.bomb.tickT = 22;
     world.charge.visible = true;
     world.charge.position.set(store.bomb.pos[0], 0.5, store.bomb.pos[2]);
-    for (const b of bots.items.slice(0, 2)) {
+    for (const b of bots.foes.slice(0, 2)) {
       b.pos.set(11 + b.id, 0, -2 - b.id);
-      b.mode = 'fight'; b.root.visible = true;
+      b.mode = 'FIGHT'; b.root.visible = true;
     }
     settle(25);
     aimAt(store.bomb.pos[0], 0.8, store.bomb.pos[2]);
@@ -492,7 +532,7 @@ function autoplayTick(dt) {
   if (store.phase === PHASE.BUY && autoT > 1) { rounds.startLive(); }
   if (store.phase !== PHASE.LIVE || !store.player.alive) return;
   let best = null, bestD = 1e9;
-  for (const b of bots.items) {
+  for (const b of bots.foes) {
     if (!b.alive) continue;
     const d = Math.hypot(b.pos.x - store.player.pos[0], b.pos.z - store.player.pos[2]);
     if (d < bestD) { bestD = d; best = b; }
@@ -507,6 +547,26 @@ function autoplayTick(dt) {
   if (Math.floor(autoT * 2) % 20 === 0) input.state.keys.add('KeyA');
 }
 
+// debug bridge for automated playtests: positions, modes, hp, phase
+// synchronous stepper for headless playtests: runs N fixed steps now
+window.__stepN = (n) => {
+  n = Math.min(n | 0 || 600, 6000);
+  input.state.sim = true;
+  for (let i = 0; i < n; i++) { step(FIXED); if (autoplay) autoplayTick(FIXED); }
+  syncCamera();
+  return window.__dbg();
+};
+window.__dbg = () => JSON.stringify({
+  phase: store.phase, round: store.round, wins: store.wins,
+  timer: Math.round(store.timer * 10) / 10, money: store.money,
+  bomb: store.bomb.state + '@' + store.bomb.site,
+  php: Math.round(store.player.hp), palive: store.player.alive,
+  ppos: store.player.pos.map((v) => Math.round(v * 10) / 10),
+  foes: bots.foes.map((b) => b.alive ? b.name + ':' + b.mode + '@' + Math.round(b.pos.x) + ',' + Math.round(b.pos.z) : b.name + ':DEAD'),
+  allies: bots.allies.map((b) => b.alive ? b.name + ':' + b.mode + '@' + Math.round(b.pos.x) + ',' + Math.round(b.pos.z) : b.name + ':DEAD'),
+  feed: document.getElementById('feed').children.length,
+});
+
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
@@ -515,5 +575,5 @@ window.addEventListener('resize', () => {
 
 syncCamera();
 if (shot) { document.getElementById('start').hidden = true; runShot(shot); }
+else if (autoplay) { document.getElementById('start').hidden = true; started = true; input.state.sim = true; requestAnimationFrame(frame); }
 else requestAnimationFrame(frame);
-if (autoplay && !shot) requestAnimationFrame(frame);

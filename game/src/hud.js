@@ -53,8 +53,15 @@ export function createHud(store, armoury) {
     if (bad) d.className = 'bad';
     el.feed.prepend(d);
     feedItems.push(d);
-    while (feedItems.length > FEED_MAX) el.feed.removeChild(feedItems.shift());
-    setTimeout(() => { if (d.parentNode) d.parentNode.removeChild(d); }, 5200);
+    while (feedItems.length > FEED_MAX) {
+      const old = feedItems.shift();
+      if (old.parentNode === el.feed) el.feed.removeChild(old);
+    }
+    setTimeout(() => {
+      const i = feedItems.indexOf(d);
+      if (i >= 0) feedItems.splice(i, 1);
+      if (d.parentNode === el.feed) el.feed.removeChild(d);
+    }, 5200);
   }
   function showBanner(win, title, sub, hold) {
     el.banner.className = win ? 'win' : 'lose';
@@ -93,10 +100,15 @@ export function createHud(store, armoury) {
     c.beginPath(); c.moveTo(0, -6); c.lineTo(4, 4); c.lineTo(-4, 4); c.closePath(); c.fill();
     c.restore();
     // foes (only those recently visible: simple last-seen dots fade)
-    for (const b of bots.items) {
+    for (const b of bots.foes) {
       if (!b.alive) continue;
-      c.fillStyle = b.mode === 'fight' ? '#e5484d' : '#e5484d88';
-      c.beginPath(); c.arc(sx(b.pos.x), sz(b.pos.z), b.mode === 'fight' ? 4 : 3, 0, 7); c.fill();
+      c.fillStyle = b.mode === 'FIGHT' ? '#e5484d' : '#e5484d88';
+      c.beginPath(); c.arc(sx(b.pos.x), sz(b.pos.z), b.mode === 'FIGHT' ? 4 : 3, 0, 7); c.fill();
+    }
+    for (const b of bots.allies) {
+      if (!b.alive) continue;
+      c.fillStyle = b.mode === 'FIGHT' ? '#2dd4bf' : '#2dd4bf88';
+      c.beginPath(); c.arc(sx(b.pos.x), sz(b.pos.z), 3, 0, 7); c.fill();
     }
     if (bombPos) {
       c.fillStyle = '#ff2200';

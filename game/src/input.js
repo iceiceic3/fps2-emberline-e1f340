@@ -38,7 +38,7 @@ export function createInput(canvas, onLockChange) {
   window.addEventListener('mouseup', (e) => { if (e.button === 0) state.firing = false; });
   document.addEventListener('pointerlockchange', () => {
     state.locked = document.pointerLockElement === canvas;
-    if (!state.locked) { keys.clear(); state.firing = false; }
+    if (!state.locked && !state.sim) { keys.clear(); state.firing = false; }
     onLockChange(state.locked);
   });
   document.addEventListener('pointerlockerror', () => onLockChange(false));

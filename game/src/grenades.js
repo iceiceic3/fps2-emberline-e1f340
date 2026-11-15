@@ -47,7 +47,7 @@ export function createGrenades(scene, colliders, shootables) {
   function explode(n, bots, playerPos, playerAlive) {
     const out = [];
     const c = n.mesh.position;
-    for (const b of bots.items) {
+    for (const b of bots.foes) {
       if (!b.alive) continue;
       segStart.set(b.pos.x, 1.2, b.pos.z);
       const d = segStart.distanceTo(c);
