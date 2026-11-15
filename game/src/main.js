@@ -437,8 +437,13 @@ function runWar() {
   rounds.startLive();
   store.player.pos = [-3, 0, 6];
   store.player.yaw = 0.35; store.player.pitch = 0.02;
+  for (const b of bots.allies) {
+    b.root.visible = true;
+    b.alive = true;
+  }
   for (const b of bots.foes.slice(0, 4)) {
     b.pos.set(-3 + (b.id - 1.5) * 2.2, 0, -6 - b.id * 1.5);
+    b.hp = 100; b.alive = true;
     b.mode = 'FIGHT'; b.react = 0;
     b.root.visible = true;
   }
@@ -465,17 +470,15 @@ function runWar() {
   settle(10);
 }
 function paintTwiceThenReady() {
-  let painted = 0;
-  function paint() {
-    requestAnimationFrame(paint);
+  // headless tabs throttle rAF: paint synchronously so captures never hang
+  for (let i = 0; i < 2; i++) {
     syncCamera();
     fx.step(1 / 60);
     hud.frame(bots, 0.004);
     renderer.render(scene, camera);
-    painted++;
-    if (painted === 2) { window.__shotReady = true; frozen = true; }
   }
-  requestAnimationFrame(paint);
+  window.__shotReady = true;
+  frozen = true;
 }
 function runShot(name) {
   input.state.sim = true;
